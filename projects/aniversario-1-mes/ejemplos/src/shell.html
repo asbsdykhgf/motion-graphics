@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>/*TITLE*/</title>
+<style>
+/*FONTS*/
+html, body { margin: 0; height: 100%; background: #0b0a0c; overflow: hidden; }
+#stage { position: absolute; left: 0; top: 0; width: 1080px; height: 1920px; transform-origin: 0 0; }
+#cv { display: block; width: 1080px; height: 1920px; }
+#ui { position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%); display: flex; gap: 10px; align-items: center;
+  font: 14px system-ui, sans-serif; color: #f3e6e9; background: rgba(20, 14, 18, .88); padding: 8px 14px; border-radius: 999px; }
+#ui button { background: #e0476b; color: #fff; border: 0; border-radius: 999px; padding: 6px 14px; font: inherit; cursor: pointer; }
+#ui input { width: 260px; accent-color: #e0476b; }
+.render #ui { display: none; }
+</style>
+</head>
+<body>
+<div id="stage"><canvas id="cv" width="1080" height="1920"></canvas></div>
+<div id="ui"><button id="pp">▶ Reproducir</button><input id="scrub" type="range" min="0" max="1000" value="0"><span id="tc">0.0 s</span></div>
+<script>
+/*SFX*/
+/*LIB*/
+</script>
+<script>
+(async () => {
+await Promise.all(['300 100px Fraunces', 'italic 300 100px Fraunces', '500 30px Geist', '500 80px Caveat', '400 100px Vibes'].map(f => document.fonts.load(f).catch(() => {})));
+/*SCENE*/
+})();
+</script>
+</body>
+</html>
