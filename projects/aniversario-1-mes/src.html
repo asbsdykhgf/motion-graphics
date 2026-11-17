@@ -1,0 +1,648 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nuestro primer mes</title>
+<style>
+/*FONTFACES*/
+html, body { margin: 0; height: 100%; background: #07030a; overflow: hidden; }
+#stage { position: absolute; left: 0; top: 0; width: 1080px; height: 1920px; transform-origin: 0 0; }
+#cv { display: block; width: 1080px; height: 1920px; }
+#ui { position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%); display: flex; gap: 10px; align-items: center;
+  font: 14px system-ui, sans-serif; color: #ffd6e0; background: rgba(30, 8, 18, .85); padding: 8px 14px; border-radius: 999px; }
+#ui button { background: #ff5c8a; color: #fff; border: 0; border-radius: 999px; padding: 6px 14px; font: inherit; cursor: pointer; }
+#ui input { width: 260px; accent-color: #ff5c8a; }
+.render #ui { display: none; }
+</style>
+</head>
+<body>
+<div id="stage"><canvas id="cv" width="1080" height="1920"></canvas></div>
+<div id="ui"><button id="pp">▶ Reproducir</button><input id="scrub" type="range" min="0" max="1000" value="0"><span id="tc">0.0 s</span></div>
+<script>
+// ============================================================
+//  PERSONALIZA AQUÍ
+// ============================================================
+const CONFIG = {
+  nombre: "",          // su nombre, p. ej. "Lucía". Vacío = "mi amor"
+  dias: 30,            // días que lleváis juntos (28–31)
+  firma: "",           // opcional: tu nombre al final, p. ej. "Pepe"
+  fecha: "",           // opcional: p. ej. "17 · 10 · 2026" (el día que empezasteis)
+};
+// ============================================================
+//  BEAT SHEET  (72 BPM, 1 compás = 3.333 s, 8 compases = 26.67 s)
+//  0.0   spark appears in the dark, heartbeats (lub-dub)        | pad swell, heartbeat thumps
+//  1.0   "Hace un mes…" letters fade in                          |
+//  2.9   spark glides to the left edge                           | soft whoosh
+//  3.5   spark draws a heartbeat line that becomes a heart       | music-box arpeggios begin
+//  5.0   "y mi corazón / empezó a latir distinto"                |
+//  8.33  heart closes, fills with glow and beats                 | heartbeat + bell
+//  8.9   heart shrinks to an icon; day counter 1→N, grid of hearts pops one by one | rising celesta ticks
+//  12.2  "720 horas · 43.200 minutos"                            | arps return
+//  13.6  "y no cambiaría ni uno solo"                            |
+//  15.0  the little hearts dissolve into sparks → two lights "tú" & "yo" | airy shimmer
+//  15.6  "dos caminos…" / "…que se encontraron"                  |
+//  16.3–20 the two lights orbit closer and closer                | rising swell
+//  20.0  they meet: flash, a big heart blooms, burst of sparkles | boom + bell chord (downbeat)
+//  21.6  "Feliz" / "primer mes" (script wipe) / "mi amor"        | melody
+//  24.2  "te quiero ♥"                                            |
+//  26.0  gentle fade to dark                                     | final chord rings out
+// ============================================================
+
+const W = 1080, H = 1920, DUR = 8 * 4 * 60 / 72; // 26.667
+const BEAT = 60 / 72;
+const params = new URLSearchParams(location.search);
+const RENDER = params.has('render');
+if (RENDER) document.documentElement.classList.add('render');
+
+// ---------- helpers ----------
+function spring(t, w = 14, z = 0.82) {
+  if (t <= 0) return 0;
+  if (z >= 1) return 1 - Math.exp(-w * t) * (1 + w * t);
+  const wd = w * Math.sqrt(1 - z * z);
+  return 1 - Math.exp(-z * w * t) * (Math.cos(wd * t) + (z * w / wd) * Math.sin(wd * t));
+}
+const clamp = (x, a = 0, b = 1) => Math.min(b, Math.max(a, x));
+const ease = x => (x = clamp(x), x < .5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2);
+const easeOut = x => 1 - Math.pow(1 - clamp(x), 3);
+const easeIn = x => Math.pow(clamp(x), 3);
+const lerp = (a, b, k) => a + (b - a) * k;
+const seg = (t, a, b) => clamp((t - a) / (b - a));
+const kf = keys => t => { if (t <= keys[0][0]) return keys[0][1]; for (let i = 1; i < keys.length; i++) { const [a, va] = keys[i - 1], [b, vb, e = ease] = keys[i]; if (t <= b) return lerp(va, vb, e((t - a) / (b - a))); } return keys[keys.length - 1][1]; };
+const rng = s => () => (s = (s + 0x6D2B79F5) | 0, s = Math.imul(s ^ (s >>> 15), 1 | s), s ^= s + Math.imul(s ^ (s >>> 7), 61 | s), ((s ^ (s >>> 14)) >>> 0) / 4294967296);
+// fade window: 0 before a, 1 between a+fi and b, 0 after b+fo
+const win = (t, a, fi, b, fo) => Math.min(seg(t, a, a + fi), 1 - seg(t, b, b + fo));
+// heartbeat pulse (lub-dub) at time tb
+const pulse = (t, tb) => { const a = t - tb, b = t - tb - 0.2; return (a > 0 ? Math.exp(-a * 9) * Math.sin(Math.min(a * 18, Math.PI / 2)) : 0) + 0.6 * (b > 0 ? Math.exp(-b * 9) * Math.sin(Math.min(b * 18, Math.PI / 2)) : 0); };
+
+const NOMBRE = CONFIG.nombre.trim() || 'mi amor';
+const DIAS = Math.max(1, Math.min(31, CONFIG.dias | 0));
+const fmt = n => n.toLocaleString('es-ES').replace(/,/g, '.').replace(/ |\s/g, '.');
+const HORAS = fmt(DIAS * 24), MINUTOS = fmt(DIAS * 1440);
+
+// ---------- palette ----------
+const C = {
+  bg0: '#2a0a19', bg1: '#07030a',
+  rose: '#ff5c8a', pink: '#ffb3c7', blush: '#ffd9e3', gold: '#ffd9a0', text: '#fff1f4', dim: '#d99aae',
+};
+
+const cv = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+
+// ---------- heart geometry ----------
+// unit heart: classic parametric, t in [0, 2π], t=0 at the top cusp, t=π at the bottom tip
+function heartXY(t) {
+  const s = Math.sin(t);
+  return [16 * s * s * s, -(13 * Math.cos(t) - 5 * Math.cos(2 * t) - 2 * Math.cos(3 * t) - Math.cos(4 * t))];
+}
+const HEART_UNIT = new Path2D();
+for (let i = 0; i <= 200; i++) { const [x, y] = heartXY(i / 200 * Math.PI * 2); i ? HEART_UNIT.lineTo(x, y) : HEART_UNIT.moveTo(x, y); }
+HEART_UNIT.closePath();
+// heart with its visual centre at (cx, cy), width ≈ 32*s
+function heartPath(c, cx, cy, s) {
+  c.save(); c.translate(cx, cy - 2.5 * s); c.scale(s, s);
+}
+
+// ---------- sprites (drawn once) ----------
+function makeGlow(size, stops) {
+  const g = document.createElement('canvas'); g.width = g.height = size;
+  const x = g.getContext('2d'), gr = x.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+  stops.forEach(([o, col]) => gr.addColorStop(o, col));
+  x.fillStyle = gr; x.fillRect(0, 0, size, size); return g;
+}
+const GLOW = makeGlow(256, [[0, 'rgba(255,255,255,1)'], [0.12, 'rgba(255,220,230,.9)'], [0.35, 'rgba(255,92,138,.35)'], [1, 'rgba(255,92,138,0)']]);
+const SOFT = makeGlow(256, [[0, 'rgba(255,140,175,.55)'], [0.5, 'rgba(255,92,138,.18)'], [1, 'rgba(255,92,138,0)']]);
+const BOKEH = makeGlow(128, [[0, 'rgba(255,190,210,.5)'], [0.7, 'rgba(255,150,180,.25)'], [1, 'rgba(255,150,180,0)']]);
+// background: deep wine radial + vignette
+const BG = (() => {
+  const g = document.createElement('canvas'); g.width = W; g.height = H;
+  const x = g.getContext('2d');
+  x.fillStyle = C.bg1; x.fillRect(0, 0, W, H);
+  let gr = x.createRadialGradient(W / 2, H * 0.46, 0, W / 2, H * 0.46, H * 0.75);
+  gr.addColorStop(0, '#3a0f22'); gr.addColorStop(0.45, '#1c0612'); gr.addColorStop(1, '#07030a');
+  x.fillStyle = gr; x.fillRect(0, 0, W, H);
+  return g;
+})();
+// film grain tiles
+const GRAIN = Array.from({ length: 6 }, (_, k) => {
+  const g = document.createElement('canvas'); g.width = 540; g.height = 960;
+  const x = g.getContext('2d'), d = x.createImageData(540, 960), r = rng(100 + k);
+  for (let i = 0; i < d.data.length; i += 4) { const v = r() * 255; d.data[i] = d.data[i + 1] = d.data[i + 2] = v; d.data[i + 3] = 255; }
+  x.putImageData(d, 0, 0); return g;
+});
+
+function glow(img, x, y, size, alpha = 1) {
+  if (alpha <= 0.002 || size <= 0) return;
+  ctx.globalAlpha = Math.min(1, alpha);
+  ctx.drawImage(img, x - size / 2, y - size / 2, size, size);
+  ctx.globalAlpha = 1;
+}
+
+// ---------- text ----------
+const F_SERIF = "'Corm', 'Cormorant Garamond', Georgia, serif";
+const F_SCRIPT = "'Vibes', 'Great Vibes', cursive";
+// words rise and un-blur one by one. opts: {size, weight, italic, color, stagger, font, out:[t, dur]}
+function words(text, x, y, t, t0, o = {}) {
+  const size = o.size || 64, font = `${o.italic ? 'italic ' : ''}${o.weight || 400} ${size}px ${o.font || F_SERIF}`;
+  ctx.font = font; ctx.textBaseline = 'alphabetic'; ctx.textAlign = 'left';
+  const ws = text.split(' '), sp = ctx.measureText(' ').width, wd = ws.map(w => ctx.measureText(w).width);
+  const total = wd.reduce((a, b) => a + b, 0) + sp * (ws.length - 1);
+  let cx = x - total / 2;
+  const outA = o.out ? 1 - seg(t, o.out[0], o.out[0] + o.out[1]) : 1;
+  ws.forEach((w, i) => {
+    const ti = t0 + i * (o.stagger ?? 0.13), k = spring(t - ti, 9, 1);
+    const a = clamp((t - ti) / 0.45) * outA;
+    if (a > 0.002) {
+      ctx.globalAlpha = a; ctx.fillStyle = o.color || C.text;
+      ctx.fillText(w, cx, y + (1 - k) * 26 - (o.out ? easeIn(seg(t, o.out[0], o.out[0] + o.out[1])) * 14 : 0));
+    }
+    cx += wd[i] + sp;
+  });
+  ctx.globalAlpha = 1;
+}
+// letters fade in one by one
+function letters(text, x, y, t, t0, per, o = {}) {
+  const size = o.size || 80; ctx.font = `${o.italic ? 'italic ' : ''}${o.weight || 400} ${size}px ${o.font || F_SERIF}`;
+  ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+  const total = ctx.measureText(text).width; let cx = x - total / 2;
+  const outA = o.out ? 1 - seg(t, o.out[0], o.out[0] + o.out[1]) : 1;
+  [...text].forEach((ch, i) => {
+    const a = clamp((t - t0 - i * per) / 0.5) * outA;
+    if (a > 0.002) { ctx.globalAlpha = a; ctx.fillStyle = o.color || C.text; ctx.fillText(ch, cx, y + (1 - easeOut(clamp((t - t0 - i * per) / 0.6))) * 10); }
+    cx += ctx.measureText(ch).width;
+  });
+  ctx.globalAlpha = 1;
+}
+
+// ---------- glowing line ----------
+function strokeGlow(pts, from, to, alpha = 1, widths = [26, 11, 3.2]) {
+  if (to - from < 2 || alpha <= 0.002) return;
+  ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  const layers = [[widths[0], 'rgba(255,92,138,0.10)'], [widths[1], 'rgba(255,120,160,0.28)'], [widths[2], 'rgba(255,235,240,0.95)']];
+  ctx.beginPath(); ctx.moveTo(pts[from][0], pts[from][1]);
+  for (let i = from + 1; i <= to; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+  ctx.globalAlpha = alpha;
+  for (const [w, col] of layers) { ctx.lineWidth = w; ctx.strokeStyle = col; ctx.stroke(); }
+  ctx.restore();
+}
+
+// ---------- scene 2: heartbeat line that becomes a heart ----------
+const BIG = { cx: 540, cy: 820, s: 21 };
+const TIP_Y = BIG.cy - 2.5 * BIG.s + 17 * BIG.s;   // bottom tip in canvas y: the line runs along it like a horizon
+const LINE = (() => {
+  const pts = []; const step = 3;
+  const push = (x, y) => pts.push([x, y]);
+  const y0 = TIP_Y, xs = 70;
+  // flat → small P bump → QRS spike → flat to the cusp
+  const ecg = x => {
+    const u = (x - 150) / 160; // spike region 150..310
+    if (u < 0 || u > 1) return 0;
+    if (u < 0.25) return -18 * Math.sin(u / 0.25 * Math.PI);            // P wave
+    if (u < 0.40) return 0;
+    if (u < 0.48) return 40 * ((u - 0.40) / 0.08);                     // Q dip
+    if (u < 0.58) return lerp(40, -180, (u - 0.48) / 0.10);            // R up
+    if (u < 0.68) return lerp(-180, 90, (u - 0.58) / 0.10);            // S down
+    if (u < 0.76) return lerp(90, 0, (u - 0.68) / 0.08);
+    if (u < 1) return -26 * Math.sin((u - 0.76) / 0.24 * Math.PI);      // T wave
+    return 0;
+  };
+  for (let x = xs; x < BIG.cx; x += 1.5) push(x, y0 + ecg(x));
+  const hStart = pts.length;
+  for (let i = 0; i <= 420; i++) { const [hx, hy] = heartXY(Math.PI + i / 420 * Math.PI * 2); push(BIG.cx + hx * BIG.s, BIG.cy - 2.5 * BIG.s + hy * BIG.s); }
+  const hEnd = pts.length - 1;
+  for (let x = BIG.cx + 1.5; x < W + 80; x += 1.5) {
+    const u = (x - 700) / 160, e = (u > 0 && u < 1) ? -60 * Math.sin(u * Math.PI) * Math.exp(-u * 2) : 0;
+    push(x, y0 + e);
+  }
+  // cumulative length
+  const L = [0]; for (let i = 1; i < pts.length; i++) L.push(L[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
+  return { pts, L, total: L[L.length - 1], hStart, hEnd };
+})();
+const idxAt = len => { const L = LINE.L; let lo = 0, hi = L.length - 1; while (lo < hi) { const m = (lo + hi) >> 1; L[m] < len ? lo = m + 1 : hi = m; } return lo; };
+const LINE_T0 = 3.5, LINE_T1 = 8.2;
+const lineProgress = t => { const u = seg(t, LINE_T0, LINE_T1); return lerp(u, ease(u), 0.35); };
+
+// ---------- scene 3: grid of days ----------
+const GRID = (() => {
+  const cols = 6, rows = Math.ceil(DIAS / cols), cell = rows > 5 ? 112 : 128;
+  const gx = W / 2 - (cols - 1) * cell / 2, gy = 1010;
+  return Array.from({ length: DIAS }, (_, i) => ({ x: gx + (i % cols) * cell, y: gy + Math.floor(i / cols) * cell, i }));
+})();
+const GRID_T0 = 9.0, GRID_STEP = BEAT / 8;  // one heart per 1/32 note
+const gridT = i => GRID_T0 + i * GRID_STEP;
+const GRID_END = gridT(DIAS - 1);
+
+// ---------- scene 4: sparks → two lights orbit → meet ----------
+const MEET = 20.0, ORB0 = 16.3;
+const OC = { x: 540, y: 880 };
+function orbit(t) {
+  const u = seg(t, ORB0, MEET);
+  const r = 330 * Math.pow(1 - u, 1.25);
+  const a = Math.PI + Math.PI * 2 * (0.55 * u + 2.0 * Math.pow(u, 2.6));
+  return [[OC.x + Math.cos(a) * r, OC.y + Math.sin(a) * r * 0.42], [OC.x - Math.cos(a) * r, OC.y - Math.sin(a) * r * 0.42]];
+}
+const SPARKS = (() => {
+  const r = rng(7), out = [];
+  GRID.forEach(g => { for (let k = 0; k < 6; k++) out.push({ x: g.x + (r() - .5) * 50, y: g.y + (r() - .5) * 40, side: (g.i + k) % 2, d: r() * 0.5, sw: (r() - .5) * 500, sz: 18 + r() * 30 }); });
+  return out;
+})();
+const BURST = (() => { const r = rng(21); return Array.from({ length: 90 }, () => { const a = r() * Math.PI * 2, v = 500 + r() * 1300; return { vx: Math.cos(a) * v, vy: Math.sin(a) * v - 200, sz: 14 + r() * 40, life: 1.2 + r() * 1.6, heart: r() < 0.3, rot: (r() - .5) * 4 }; }); })();
+const RISERS = (() => { const r = rng(33); return Array.from({ length: 24 }, () => ({ x: 40 + r() * (W - 80), t0: 20.3 + r() * 5.5, v: 90 + r() * 170, s: 0.6 + r() * 1.2, sw: 20 + r() * 50, ph: r() * 6.28, a: 0.25 + r() * 0.5 })); })();
+const BOKEHS = (() => { const r = rng(55); return Array.from({ length: 22 }, () => ({ x: r() * W, y: r() * H, z: 40 + r() * 160, vx: (r() - .5) * 14, vy: -6 - r() * 16, a: 0.05 + r() * 0.12, ph: r() * 6.28 })); })();
+
+function drawMiniHeart(x, y, s, fill, line, rot = 0) {
+  ctx.save(); ctx.translate(x, y); ctx.rotate(rot); ctx.scale(s, s); ctx.translate(0, -2.5);
+  if (fill > 0.002) { ctx.globalAlpha = fill; ctx.fillStyle = C.rose; ctx.fill(HEART_UNIT); }
+  if (line > 0.002) { ctx.globalAlpha = line; ctx.lineWidth = 1.6 / s; ctx.strokeStyle = 'rgba(255,179,199,.9)'; ctx.stroke(HEART_UNIT); }
+  ctx.restore(); ctx.globalAlpha = 1;
+}
+// big glowing filled heart
+function drawBigHeart(cx, cy, s, fillA, lineA) {
+  if (fillA > 0.002) {
+    glow(SOFT, cx, cy, s * 70, fillA * 0.9);
+    ctx.save(); ctx.translate(cx, cy - 2.5 * s); ctx.scale(s, s);
+    const gr = ctx.createRadialGradient(-5, -7, 1, 0, 0, 22);
+    gr.addColorStop(0, '#ffc2d3'); gr.addColorStop(0.45, '#ff5c8a'); gr.addColorStop(1, '#b3164a');
+    ctx.globalAlpha = fillA; ctx.fillStyle = gr; ctx.fill(HEART_UNIT);
+    // glossy highlight
+    ctx.globalAlpha = fillA * 0.35; ctx.fillStyle = '#fff';
+    ctx.beginPath(); ctx.ellipse(-7.5, -6.5, 3.2, 1.6, -0.6, 0, Math.PI * 2); ctx.fill();
+    ctx.restore(); ctx.globalAlpha = 1;
+  }
+  if (lineA > 0.002) {
+    ctx.save(); ctx.translate(cx, cy - 2.5 * s); ctx.scale(s, s); ctx.globalCompositeOperation = 'lighter'; ctx.lineJoin = 'round';
+    [[22, .10], [9, .28], [2.8, .9]].forEach(([w, a]) => { ctx.globalAlpha = a * lineA; ctx.lineWidth = w / s; ctx.strokeStyle = a > .5 ? '#ffeef2' : '#ff6f98'; ctx.stroke(HEART_UNIT); });
+    ctx.restore(); ctx.globalAlpha = 1;
+  }
+}
+
+// ============================================================
+//  seek(t): draws frame t from scratch
+// ============================================================
+function seek(t) {
+  t = Math.max(0, Math.min(DUR - 1e-4, t));
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 1;
+  ctx.drawImage(BG, 0, 0);
+
+  // slow camera breathing (very slight zoom over the whole piece, push-in at the end)
+  const zoom = 1 + 0.03 * Math.sin(t * 0.25) + 0.05 * ease(seg(t, 20.5, 26.6));
+  ctx.setTransform(zoom, 0, 0, zoom, W / 2 * (1 - zoom), H * 0.47 * (1 - zoom));
+
+  // bokeh drifting in the background
+  ctx.globalCompositeOperation = 'lighter';
+  const bokA = 0.35 + 0.65 * seg(t, 0, 4);
+  for (const b of BOKEHS) {
+    const x = ((b.x + b.vx * t) % W + W) % W, y = ((b.y + b.vy * t) % H + H) % H;
+    glow(BOKEH, x, y, b.z, b.a * bokA * (0.7 + 0.3 * Math.sin(t * 0.8 + b.ph)));
+  }
+  ctx.globalCompositeOperation = 'source-over';
+
+  // ---------------- scene 1: the spark ----------------
+  if (t < LINE_T0 + 0.2) {
+    const appear = spring(t - 0.25, 7, 0.6);
+    const beat = pulse(t, 0.85) + pulse(t, 0.85 + BEAT) + pulse(t, 0.85 + 2 * BEAT);
+    const mv = ease(seg(t, 2.9, LINE_T0));
+    const sx = lerp(540, LINE.pts[0][0], mv), sy = lerp(900, LINE.pts[0][1], mv + 0.25 * Math.sin(mv * Math.PI));
+    ctx.globalCompositeOperation = 'lighter';
+    glow(SOFT, sx, sy, (360 + 260 * beat) * appear, 0.8 * appear);
+    glow(GLOW, sx, sy, (110 + 70 * beat) * appear, appear);
+    ctx.globalCompositeOperation = 'source-over';
+    if (CONFIG.nombre.trim()) words('para ' + CONFIG.nombre.trim(), 540, 560, t, 0.5, { size: 46, italic: true, color: C.dim, out: [2.7, 0.5] });
+    letters('Hace un mes…', 540, 1110, t, 1.0, 0.07, { size: 92, italic: true, weight: 400, out: [2.75, 0.5] });
+  }
+
+  // ---------------- scene 2: line → heart ----------------
+  if (t >= LINE_T0 && t < 9.9) {
+    const p = lineProgress(t), len = p * LINE.total, head = idxAt(len);
+    const fadeSides = 1 - seg(t, 8.0, 8.8);
+    const shrink = ease(seg(t, 8.9, 9.8));
+    if (shrink < 0.02) {
+      // pre-heart + post-heart parts fade; heart outline stays
+      strokeGlow(LINE.pts, 0, Math.min(head, LINE.hStart), fadeSides);
+      if (head > LINE.hStart) strokeGlow(LINE.pts, LINE.hStart, Math.min(head, LINE.hEnd), 1);
+      if (head > LINE.hEnd) strokeGlow(LINE.pts, LINE.hEnd, head, fadeSides);
+    }
+    // the bright head of the line
+    if (p < 1) {
+      const [hx, hy] = LINE.pts[head];
+      ctx.globalCompositeOperation = 'lighter';
+      glow(SOFT, hx, hy, 300, 0.7); glow(GLOW, hx, hy, 120, 1);
+      ctx.globalCompositeOperation = 'source-over';
+    }
+    // heart fills and beats once closed
+    const fillA = seg(t, 7.3, 8.4);
+    if (fillA > 0) {
+      const b = pulse(t, 8.33) + pulse(t, 8.33 + BEAT);
+      const s = lerp(BIG.s, 7, shrink) * (1 + 0.06 * b), cy = lerp(BIG.cy, 330, shrink);
+      drawBigHeart(540, cy, s, fillA * (0.55 + 0.45 * shrink), shrink > 0.02 ? 1 - shrink * 0.6 : 0);
+    }
+    words('y mi corazón', 540, 1360, t, 5.0, { size: 76, italic: true, out: [8.5, 0.5] });
+    words('empezó a latir distinto', 540, 1460, t, 5.6, { size: 76, italic: true, out: [8.5, 0.5] });
+  }
+
+  // ---------------- scene 3: counting the days ----------------
+  if (t >= 9.6 && t < 16.4) {
+    const outA = 1 - seg(t, 14.9, 15.4);
+    // icon heart (continues from scene 2), keeps beating softly
+    const b = pulse(t, 10.0) + pulse(t, 10.0 + 2 * BEAT) + pulse(t, 10 + 4 * BEAT) + pulse(t, 10 + 6 * BEAT);
+    drawBigHeart(540, 330, 7 * (1 + 0.07 * b), outA, 0.4 * outA);
+    // counter
+    const shown = GRID.filter(g => t >= gridT(g.i)).length;
+    const nA = win(t, 9.4, 0.5, 14.9, 0.5);
+    if (nA > 0) {
+      const lastPop = shown ? t - gridT(shown - 1) : 9;
+      const bump = 1 + 0.05 * Math.exp(-lastPop * 14) * (shown < DIAS ? 1 : 2.5);
+      ctx.save(); ctx.translate(540, 700); ctx.scale(bump, bump);
+      ctx.font = `300 280px ${F_SERIF}`; ctx.textAlign = 'center'; ctx.fillStyle = C.text; ctx.globalAlpha = nA;
+      ctx.fillText(String(Math.max(1, shown)), 0, 0); ctx.restore();
+      ctx.globalAlpha = nA; ctx.textAlign = 'center'; ctx.font = `italic 400 66px ${F_SERIF}`; ctx.fillStyle = C.pink;
+      ctx.fillText(Math.max(1, shown) === 1 ? 'día juntos' : 'días juntos', 540, 880); ctx.globalAlpha = 1;
+    }
+    // grid of hearts
+    const sparkT = seg(t, 15.0, 15.5);
+    GRID.forEach(g => {
+      const ti = gridT(g.i), k = spring(t - ti, 16, 0.45);
+      const outline = win(t, 9.3 + g.i * 0.012, 0.4, 15.0, 0.3) * 0.35;
+      const s = 3.0 * (t >= ti ? lerp(0.2, 1, k) : 1) * (1 - sparkT);
+      if (sparkT < 1) {
+        drawMiniHeart(g.x, g.y, 3.0, 0, outline * (t >= ti ? 0.4 : 1));
+        if (t >= ti) {
+          drawMiniHeart(g.x, g.y, s, 1 - sparkT * 0.5, 0);
+          const fl = Math.exp(-(t - ti) * 7);
+          if (fl > 0.01) { ctx.globalCompositeOperation = 'lighter'; glow(GLOW, g.x, g.y, 160, fl * 0.8); ctx.globalCompositeOperation = 'source-over'; }
+        }
+      }
+    });
+    if (t > GRID_END && t < GRID_END + 0.7) { ctx.globalCompositeOperation = 'lighter'; glow(SOFT, 540, 1200, 1400, 0.5 * Math.exp(-(t - GRID_END) * 5)); ctx.globalCompositeOperation = 'source-over'; }
+    words(`${HORAS} horas · ${MINUTOS} minutos`, 540, 1720, t, 12.2, { size: 54, italic: true, color: C.pink, stagger: 0.18, out: [13.4, 0.45] });
+    words('y no cambiaría ni uno solo', 540, 1720, t, 13.75, { size: 66, italic: true, out: [14.9, 0.5] });
+  }
+
+  // ---------------- scene 4: two lights ----------------
+  if (t >= 15.0 && t < MEET + 0.1) {
+    const [A, B] = orbit(t);
+    const [A0, B0] = orbit(ORB0);
+    ctx.globalCompositeOperation = 'lighter';
+    // sparks flying from the grid to the two lights
+    for (const s of SPARKS) {
+      const u = seg(t, 15.0 + s.d * 0.6, ORB0 + s.d * 0.2);
+      if (u <= 0 || u >= 1) continue;
+      const tgt = s.side ? B0 : A0, e = ease(u);
+      const x = lerp(s.x, tgt[0], e) + Math.sin(u * Math.PI) * s.sw * 0.3, y = lerp(s.y, tgt[1], e) - Math.sin(u * Math.PI) * 160;
+      glow(GLOW, x, y, s.sz * (1 - 0.5 * u), Math.sin(u * Math.PI) * 0.9 + 0.1);
+    }
+    const lightA = seg(t, 15.7, ORB0 + 0.15);
+    // trails
+    for (let k = 14; k >= 1; k--) {
+      const tt = t - k * 0.022; if (tt < ORB0) continue;
+      const [a, b] = orbit(tt), al = (1 - k / 15) * 0.35 * lightA;
+      glow(GLOW, a[0], a[1], 70 * (1 - k / 18), al); glow(GLOW, b[0], b[1], 70 * (1 - k / 18), al);
+    }
+    const near = seg(t, 18.6, MEET);
+    glow(SOFT, A[0], A[1], 320 + 200 * near, 0.8 * lightA); glow(SOFT, B[0], B[1], 320 + 200 * near, 0.8 * lightA);
+    glow(GLOW, A[0], A[1], 120, lightA); glow(GLOW, B[0], B[1], 120, lightA);
+    // pre-meet swell
+    glow(SOFT, OC.x, OC.y, 900 * near, 0.6 * near * near);
+    ctx.globalCompositeOperation = 'source-over';
+    // labels
+    const labA = win(t, 16.0, 0.5, 17.6, 0.5);
+    if (labA > 0) {
+      ctx.globalAlpha = labA; ctx.font = `italic 400 54px ${F_SERIF}`; ctx.textAlign = 'center'; ctx.fillStyle = C.blush;
+      ctx.fillText('tú', A[0], A[1] + 105); ctx.fillText('yo', B[0], B[1] + 105); ctx.globalAlpha = 1;
+    }
+    words('dos caminos…', 540, 520, t, 15.7, { size: 78, italic: true, out: [19.3, 0.5] });
+    words('…que se encontraron', 540, 1330, t, 17.3, { size: 78, italic: true, out: [19.4, 0.45] });
+  }
+
+  // ---------------- scene 5: bloom + final card ----------------
+  if (t >= MEET) {
+    const dt = t - MEET;
+    const up = ease(seg(t, 21.0, 22.2));
+    const beats = [0, 1, 2, 3, 4, 5, 6, 7].reduce((a, k) => a + pulse(t, 21.67 + k * BEAT * 1), 0) * 0.5;
+    const s = 15 * spring(dt, 9, 0.5) * lerp(1, 0.62, up) * (1 + 0.05 * beats);
+    const cy = lerp(OC.y + 40, 560, up);
+    // shockwave rings
+    ctx.globalCompositeOperation = 'lighter';
+    [0, 0.18].forEach((d, i) => {
+      const u = seg(dt, d, d + 1.3); if (u <= 0 || u >= 1) return;
+      ctx.beginPath(); ctx.arc(540, OC.y, 60 + easeOut(u) * 900, 0, Math.PI * 2);
+      ctx.lineWidth = 10 * (1 - u) + 1; ctx.strokeStyle = `rgba(255,170,195,${0.6 * (1 - u) * (i ? 0.5 : 1)})`; ctx.stroke();
+    });
+    ctx.globalCompositeOperation = 'source-over';
+    drawBigHeart(540, cy, s, 1, 0.5);
+    // burst of sparkles and little hearts
+    for (const b of BURST) {
+      if (dt > b.life) continue;
+      const k = 2.6, fdt = (1 - Math.exp(-k * dt)) / k;
+      const x = 540 + b.vx * fdt, y = OC.y + b.vy * fdt + 140 * dt * dt;
+      const a = Math.pow(1 - dt / b.life, 1.5);
+      if (b.heart) drawMiniHeart(x, y, b.sz / 40, a * 0.9, 0, b.rot * dt);
+      else { ctx.globalCompositeOperation = 'lighter'; glow(GLOW, x, y, b.sz, a); ctx.globalCompositeOperation = 'source-over'; }
+    }
+    // rising hearts
+    for (const r of RISERS) {
+      const d = t - r.t0; if (d < 0) continue;
+      const y = H + 60 - r.v * d; if (y < -80) continue;
+      const band = 1 - 0.8 * clamp(1 - Math.abs(y - 1250) / 380) * (Math.abs(r.x + Math.sin(d * 1.3 + r.ph) * r.sw - 540) < 380 ? 1 : 0.3);
+      const a = r.a * clamp(d / 0.8) * clamp((y + 40) / 700) * band;
+      drawMiniHeart(r.x + Math.sin(d * 1.3 + r.ph) * r.sw, y, r.s, a, 0, Math.sin(d + r.ph) * 0.25);
+    }
+    // flash
+    const fl = Math.exp(-dt * 4.5) * seg(dt, -0.01, 0.04);
+    if (fl > 0.01) { ctx.globalCompositeOperation = 'lighter'; glow(SOFT, 540, OC.y, 2600, fl); glow(GLOW, 540, OC.y, 700, fl); ctx.globalCompositeOperation = 'source-over'; }
+
+    // final text
+    words('Feliz', 540, 1000, t, 21.7, { size: 104, italic: true, weight: 400 });
+    // "primer mes" in script, revealed by a soft left→right wipe
+    const wipe = seg(t, 22.15, 23.5);
+    if (wipe > 0) {
+      ctx.save(); ctx.font = `400 210px ${F_SCRIPT}`; ctx.textAlign = 'center';
+      const tw = ctx.measureText('primer mes').width, x0 = 540 - tw / 2 - 40, x1 = x0 + (tw + 120) * lerp(wipe, easeOut(wipe), 0.5);
+      const gr = ctx.createLinearGradient(x1 - 90, 0, x1, 0); gr.addColorStop(0, 'rgba(0,0,0,1)'); gr.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = C.rose; ctx.shadowColor = 'rgba(255,92,138,.55)'; ctx.shadowBlur = 0;
+      // draw into an offscreen mask to keep it pure
+      const off = OFF; const o = off.getContext('2d'); o.setTransform(1, 0, 0, 1, 0, 0); o.clearRect(0, 0, off.width, off.height);
+      o.font = ctx.font; o.textAlign = 'center'; o.textBaseline = 'alphabetic';
+      const tg = o.createLinearGradient(0, 1060, 0, 1230); tg.addColorStop(0, '#ffc2d3'); tg.addColorStop(1, '#ff5c8a');
+      o.fillStyle = tg; o.fillText('primer mes', 540, 1220);
+      o.globalCompositeOperation = 'destination-in';
+      const mg = o.createLinearGradient(x1 - 110, 0, x1, 0); mg.addColorStop(0, 'rgba(0,0,0,1)'); mg.addColorStop(1, 'rgba(0,0,0,0)');
+      o.fillStyle = mg; o.fillRect(0, 0, off.width, off.height); o.globalCompositeOperation = 'source-over';
+      ctx.globalCompositeOperation = 'lighter'; glow(SOFT, 540, 1160, 1100, 0.35 * wipe); ctx.globalCompositeOperation = 'source-over';
+      ctx.drawImage(off, 0, 0);
+      ctx.restore();
+    }
+    words(NOMBRE, 540, 1375, t, 23.2, { size: 84, italic: true, color: C.blush });
+    // "te quiero" + little heart
+    const tq = seg(t, 24.2, 24.9);
+    if (tq > 0) {
+      ctx.save(); ctx.globalAlpha = tq; ctx.font = `500 44px ${F_SERIF}`; ctx.textAlign = 'center'; ctx.fillStyle = C.gold;
+      if ('letterSpacing' in ctx) ctx.letterSpacing = '14px';
+      const label = 'TE QUIERO'; ctx.textAlign = 'left'; const lw = ctx.measureText(label).width - 14, x0 = 540 - (lw + 56) / 2;
+      ctx.fillText(label, x0, 1545 + (1 - easeOut(tq)) * 16); ctx.restore();
+      drawMiniHeart(x0 + lw + 44, 1530 + (1 - easeOut(tq)) * 16, 0.9 * (1 + 0.15 * pulse(t, 24.8)), tq, 0);
+      ctx.globalAlpha = 1;
+    }
+    const extra = [CONFIG.firma.trim() ? '— ' + CONFIG.firma.trim() : '', CONFIG.fecha.trim()].filter(Boolean).join('   ·   ');
+    if (extra) words(extra, 540, 1650, t, 24.7, { size: 44, italic: true, color: C.dim });
+  }
+
+  // grain + vignette + end fade
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalCompositeOperation = 'overlay'; ctx.globalAlpha = 0.07;
+  ctx.drawImage(GRAIN[Math.floor(t * 24) % GRAIN.length], 0, 0, W, H);
+  ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 1;
+  const fadeIn = 1 - seg(t, 0, 0.6), fadeOut = ease(seg(t, 25.9, DUR));
+  const black = Math.max(fadeIn, fadeOut * 0.92);
+  if (black > 0) { ctx.fillStyle = `rgba(7,3,10,${black})`; ctx.fillRect(0, 0, W, H); }
+}
+const OFF = (() => { const c = document.createElement('canvas'); c.width = W; c.height = H; return c; })();
+
+// ============================================================
+//  SOUND: soft pad, music box, heartbeats, shimmer, bloom
+// ============================================================
+const mtof = m => 440 * Math.pow(2, (m - 69) / 12);
+async function buildAudio(ac) {
+  const sr = ac.sampleRate, R = rng(999);
+  const master = ac.createGain(); master.gain.value = 0.8;
+  const comp = ac.createDynamicsCompressor(); comp.threshold.value = -18; comp.ratio.value = 3; comp.attack.value = 0.01; comp.release.value = 0.3;
+  master.connect(comp); comp.connect(ac.destination);
+  // reverb
+  const irLen = Math.floor(sr * 3.6), ir = ac.createBuffer(2, irLen, sr);
+  for (let ch = 0; ch < 2; ch++) { const d = ir.getChannelData(ch); for (let i = 0; i < irLen; i++) d[i] = (R() * 2 - 1) * Math.pow(1 - i / irLen, 2.2) * Math.exp(-i / sr * 1.2); }
+  const verb = ac.createConvolver(); verb.buffer = ir; const wet = ac.createGain(); wet.gain.value = 0.55; verb.connect(wet); wet.connect(master);
+  const dry = ac.createGain(); dry.gain.value = 0.9; dry.connect(master);
+  const bus = (send = 0.5) => { const g = ac.createGain(); g.connect(dry); const s = ac.createGain(); s.gain.value = send; g.connect(s); s.connect(verb); return g; };
+  const padBus = bus(0.6), boxBus = bus(0.7), lowBus = bus(0.15), fxBus = bus(0.8);
+
+  // chords per bar (MIDI): F, Dm, Bb, C, Dm, Bb, F, Bb→F
+  const BAR = 4 * BEAT;
+  const chords = [[53, 57, 60, 64], [50, 53, 57, 60], [46, 50, 53, 57], [48, 52, 55, 60], [50, 53, 57, 62], [46, 50, 53, 58], [53, 57, 60, 65], [46, 50, 53, 58]];
+  const roots = [41, 38, 34, 36, 38, 34, 41, 34];
+
+  // pad: detuned saws, slow attack, low-pass
+  function pad(notes, t0, dur, vol) {
+    const f = ac.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = 950; f.Q.value = 0.4;
+    const g = ac.createGain(); g.gain.setValueAtTime(0, t0); g.gain.linearRampToValueAtTime(vol, t0 + 1.1); g.gain.setValueAtTime(vol, t0 + dur - 0.2); g.gain.linearRampToValueAtTime(0, t0 + dur + 1.4);
+    f.connect(g); g.connect(padBus);
+    notes.forEach(n => [-7, 7].forEach(det => { const o = ac.createOscillator(); o.type = 'sawtooth'; o.frequency.value = mtof(n); o.detune.value = det; const og = ac.createGain(); og.gain.value = 0.05; o.connect(og); og.connect(f); o.start(t0); o.stop(t0 + dur + 1.6); }));
+  }
+  // music box / celesta note
+  function bell(m, t0, vol = 0.12, len = 2.2) {
+    const g = ac.createGain(); g.gain.setValueAtTime(0, t0); g.gain.linearRampToValueAtTime(vol, t0 + 0.004); g.gain.exponentialRampToValueAtTime(0.0005, t0 + len);
+    g.connect(boxBus);
+    [[1, 1], [2, 0.35], [3.01, 0.12], [4.2, 0.06]].forEach(([h, a]) => {
+      const o = ac.createOscillator(); o.type = 'sine'; o.frequency.value = mtof(m) * h;
+      const og = ac.createGain(); og.gain.setValueAtTime(a, t0); og.gain.exponentialRampToValueAtTime(0.0005, t0 + len / (h * 0.9));
+      o.connect(og); og.connect(g); o.start(t0); o.stop(t0 + len + 0.1);
+    });
+  }
+  // soft piano-ish bass
+  function bass(m, t0, dur, vol = 0.22) {
+    const o = ac.createOscillator(); o.type = 'triangle'; o.frequency.value = mtof(m);
+    const g = ac.createGain(); g.gain.setValueAtTime(0, t0); g.gain.linearRampToValueAtTime(vol, t0 + 0.02); g.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
+    o.connect(g); g.connect(lowBus); o.start(t0); o.stop(t0 + dur + 0.1);
+  }
+  // heartbeat thump
+  function thump(t0, vol = 0.9) {
+    [[0, vol], [0.2, vol * 0.6]].forEach(([d, v]) => {
+      const o = ac.createOscillator(); o.type = 'sine'; o.frequency.setValueAtTime(78, t0 + d); o.frequency.exponentialRampToValueAtTime(38, t0 + d + 0.22);
+      const g = ac.createGain(); g.gain.setValueAtTime(0, t0 + d); g.gain.linearRampToValueAtTime(v, t0 + d + 0.012); g.gain.exponentialRampToValueAtTime(0.001, t0 + d + 0.32);
+      o.connect(g); g.connect(lowBus); o.start(t0 + d); o.stop(t0 + d + 0.4);
+    });
+  }
+  // filtered noise swell (whoosh / shimmer)
+  const nbuf = ac.createBuffer(1, sr * 6, sr); { const d = nbuf.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = R() * 2 - 1; }
+  function noise(t0, dur, f0, f1, vol, shape = 'swell') {
+    const s = ac.createBufferSource(); s.buffer = nbuf;
+    const f = ac.createBiquadFilter(); f.type = 'bandpass'; f.Q.value = 1.2; f.frequency.setValueAtTime(f0, t0); f.frequency.exponentialRampToValueAtTime(f1, t0 + dur);
+    const g = ac.createGain();
+    if (shape === 'swell') { g.gain.setValueAtTime(0.0001, t0); g.gain.exponentialRampToValueAtTime(vol, t0 + dur); g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur + 0.6); }
+    else { g.gain.setValueAtTime(0, t0); g.gain.linearRampToValueAtTime(vol, t0 + dur * 0.4); g.gain.linearRampToValueAtTime(0, t0 + dur); }
+    s.connect(f); f.connect(g); g.connect(fxBus); s.start(t0); s.stop(t0 + dur + 0.7);
+  }
+
+  // --- arrangement ---
+  chords.forEach((ch, b) => pad(b === 7 ? ch : ch, b * BAR, BAR, b === 0 ? 0.6 : b === 6 ? 1.0 : 0.8));
+  pad([53, 57, 60, 65], 7.5 * BAR, BAR * 0.5 + 0.6, 0.9);                  // last half bar → F
+  roots.forEach((r, b) => { if (b >= 1) { bass(r, b * BAR, BAR * 0.9); bass(r, b * BAR + 2.5 * BEAT, BEAT * 1.4, 0.12); } });
+  bass(41, 7.5 * BAR, 3.5, 0.2);
+  // heartbeats
+  [0.85, 0.85 + BEAT, 0.85 + 2 * BEAT].forEach(t => thump(t, 0.8));
+  [8.33, 8.33 + BEAT].forEach(t => thump(t, 0.55));
+  // spark glide whoosh
+  noise(2.85, 0.7, 500, 2400, 0.025, 'hump');
+  // arpeggios (8th notes) bars 1–2 and bars 3.6–5
+  const arp = [0, 1, 2, 3, 2, 1, 2, 3];
+  for (let i = 0; i < 64; i++) {
+    const t = BAR + i * BEAT / 2, b = Math.floor(t / BAR);
+    if (b > 5) break;
+    if (t > GRID_T0 - 0.3 && t < GRID_END + 0.4) continue;   // grid ticks take over
+    if (t > 15.0 && t < ORB0) continue;
+    const ch = chords[b]; const n = ch[arp[i % 8]] + 24;
+    bell(n, t, (i % 2 ? 0.05 : 0.075) * (b === 1 ? 0.8 : 1), 1.8);
+  }
+  // heart closes: bell
+  bell(77, 8.33, 0.11, 3); bell(72, 8.33, 0.07, 3);
+  // grid ticks: pentatonic ascent
+  const penta = [0, 2, 4, 7, 9];
+  for (let i = 0; i < DIAS; i++) { const m = 72 + 12 * Math.floor(i / 5) / 2 + penta[i % 5]; bell(Math.min(m, 100) | 0, gridT(i), 0.045 + 0.02 * (i / DIAS), 0.9); }
+  bell(89, GRID_END + 0.1, 0.08, 2.5); bell(84, GRID_END + 0.1, 0.06, 2.5);
+  // scene 4 airy shimmer + rising swell into the meet
+  noise(15.0, 1.4, 3000, 7000, 0.015, 'hump');
+  noise(ORB0, MEET - ORB0, 300, 4000, 0.06, 'swell');
+  for (let i = 0; i < 14; i++) { const t = ORB0 + (MEET - ORB0) * (1 - Math.pow(1 - i / 14, 1.6)); bell(84 + penta[i % 5] + (i > 7 ? 12 : 0), t, 0.03, 0.8); }
+  // the meet: boom + bloom chord + sparkles
+  { const o = ac.createOscillator(); o.type = 'sine'; o.frequency.setValueAtTime(90, MEET); o.frequency.exponentialRampToValueAtTime(32, MEET + 1.2);
+    const g = ac.createGain(); g.gain.setValueAtTime(0, MEET); g.gain.linearRampToValueAtTime(0.8, MEET + 0.015); g.gain.exponentialRampToValueAtTime(0.001, MEET + 1.6);
+    o.connect(g); g.connect(lowBus); o.start(MEET); o.stop(MEET + 1.7); }
+  [65, 69, 72, 77, 81].forEach((m, i) => bell(m, MEET + i * 0.012, 0.07, 4));
+  for (let i = 0; i < 18; i++) bell(96 + penta[Math.floor(R() * 5)] - 12 * (R() < 0.4), MEET + 0.05 + R() * 1.6, 0.02 + R() * 0.02, 0.7);
+  // melody (bars 6–7): over the final card
+  const mel = [[6, 0, 72, 1.5], [6, 1.5, 69, 0.5], [6, 2, 72, 1], [6, 3, 77, 1], [7, 0, 74, 1.5], [7, 1.5, 72, 0.5], [7, 2, 70, 0.5], [7, 2.5, 69, 0.5], [7, 3, 65, 2]];
+  mel.forEach(([b, beat, m]) => bell(m + 12, b * BAR + beat * BEAT + 1.67, 0.1, 2.6));
+  // soft arps under the final card
+  for (let i = 0; i < 16; i++) { const t = 6 * BAR + BEAT * 2 + i * BEAT / 2; if (t > DUR - 1.2) break; const b = Math.floor(t / BAR); bell(chords[b][arp[i % 8]] + 12, t, 0.035, 1.5); }
+  // final heart
+  thump(24.8, 0.3);
+  bell(77, DUR - 1.0, 0.05, 3);
+}
+
+// ============================================================
+//  boot: fonts first, then expose the contract
+// ============================================================
+(async () => {
+  try { await Promise.all(["400 80px Corm", "italic 400 80px Corm", "300 80px Corm", "500 80px Corm", "400 80px Vibes"].map(f => document.fonts.load(f))); } catch (e) {}
+  await document.fonts.ready;
+  window.VIDEO = { w: W, h: H, duration: DUR };
+  window.seek = seek;
+  window.buildAudio = buildAudio;
+  seek(RENDER ? 0 : 0.0);
+  if (RENDER) return;
+  // preview: fit to window, play with sound
+  const stage = document.getElementById('stage');
+  const fit = () => { const k = Math.min(innerWidth / W, (innerHeight - 60) / H); stage.style.transform = `translate(${(innerWidth - W * k) / 2}px, 0) scale(${k})`; };
+  addEventListener('resize', fit); fit();
+  let buf, ac, src, startAt = 0, offset = 0, playing = false;
+  const pp = document.getElementById('pp'), sc = document.getElementById('scrub'), tc = document.getElementById('tc');
+  async function play() {
+    ac ??= new AudioContext();
+    if (!buf) { pp.textContent = '…'; const off = new OfflineAudioContext(2, Math.ceil(48000 * (DUR + 2)), 48000); await buildAudio(off); buf = await off.startRendering(); }
+    if (offset >= DUR - 0.05) offset = 0;
+    src = ac.createBufferSource(); src.buffer = buf; src.connect(ac.destination);
+    src.start(0, offset); startAt = ac.currentTime; playing = true; pp.textContent = '❚❚ Pausa';
+  }
+  function pause() { if (!playing) return; offset += ac.currentTime - startAt; src.stop(); playing = false; pp.textContent = '▶ Reproducir'; }
+  const now = () => playing ? offset + ac.currentTime - startAt : offset;
+  pp.onclick = () => playing ? pause() : play();
+  sc.oninput = () => { const was = playing; pause(); offset = sc.value / 1000 * DUR; if (was) play(); };
+  (function loop() {
+    let t = now(); if (playing && t >= DUR) { pause(); offset = DUR - 0.001; t = offset; }
+    seek(t); sc.value = Math.round(t / DUR * 1000); tc.textContent = t.toFixed(1) + ' s';
+    requestAnimationFrame(loop);
+  })();
+})();
+</script>
+</body>
+</html>
