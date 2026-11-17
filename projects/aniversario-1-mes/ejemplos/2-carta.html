@@ -671,7 +671,7 @@ async function buildAudio(ac) {
   // pen scratch: amplitude follows the stroke rhythm
   for (const sg of SCHED.segs) {
     const dur = sg.t1 - sg.t0, n = Math.max(1, Math.round(dur * (sg.kind === 'scribble' ? 11 : 7.5)));
-    for (let i = 0; i < n; i++) M.noise(sg.t0 + (i / n) * dur, dur / n * 0.9, 5200, 3800, sg.kind === 'scribble' ? 0.05 : 0.026, 'hump', M.fx, 'bandpass', 2.2);
+    for (let i = 0; i < n; i++) M.noise(sg.t0 + (i / n) * dur, dur / n * 0.9, 5200, 3800, sg.kind === 'scribble' ? 0.024 : 0.012, 'hump', M.fx, 'bandpass', 3);
   }
   // fold, stamp
   [FOLD_B[0], FOLD_T[0]].forEach(t => { M.noise(t, 0.45, 2600, 1100, 0.06, 'hump', M.fx, 'bandpass', 0.9); });
