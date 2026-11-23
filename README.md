@@ -12,6 +12,7 @@ Free video-editing skills for Claude Code. Each skill does one job.
 | [`explainer-default`](skills/explainer-default/README.md) | A clean 45–90 s product demo: your product's UI rebuilt and filmed up close while it's used. |
 | [`explainer-engaging`](skills/explainer-engaging/README.md) | A 10–30 s one-take story: one element travels through your product's workflow. |
 | [`sound-effects`](skills/sound-effects/README.md) | Adds real sound effects timed to the beat and measured, so it doesn't sound like cheap beeps. |
+| [`todo-en-uno`](skills/todo-en-uno/README.md) | One skill for all 8 repos (HyperFrames, Remotion, GSAP, motion-graphics, Kokoro, Hallmark, Humanizer, Superpowers): picks the right sub-skill and reads it on demand. |
 
 > **Want the full course?** I teach my entire AI video editing process step by step in my community: **[Join Bart's AI Workshop on Skool](https://www.skool.com/barts-ai-workshop-4507/about)**
 
